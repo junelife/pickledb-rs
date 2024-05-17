@@ -1,6 +1,7 @@
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -379,19 +380,37 @@ impl PickleDb {
                         .as_secs()
                 );
 
-                match fs::write(&temp_file_path, ser_db) {
+                match File::create(&temp_file_path) {
+                    Ok(mut file) => {
+                        match file.write_all(&ser_db) {
+                            Ok(_) => (),
+                            Err(err) => return Err(Error::new(ErrorCode::Io(err))),
+                        }
+                        match file.sync_all() {
+                            Ok(_) => (),
+                            Err(err) => return Err(Error::new(ErrorCode::Io(err))),
+                        }
+                    }
+                    Err(err) => return Err(Error::new(ErrorCode::Io(err))),
+                }
+
+                match fs::rename(&temp_file_path, &self.db_file_path) {
                     Ok(_) => (),
                     Err(err) => return Err(Error::new(ErrorCode::Io(err))),
                 }
 
-                match fs::rename(temp_file_path, &self.db_file_path) {
-                    Ok(_) => (),
+                match File::open(&self.db_file_path) {
+                    Ok(file) => match file.sync_all() {
+                        Ok(_) => (),
+                        Err(err) => return Err(Error::new(ErrorCode::Io(err))),
+                    },
                     Err(err) => return Err(Error::new(ErrorCode::Io(err))),
                 }
 
                 if let PickleDbDumpPolicy::PeriodicDump(_dur) = self.dump_policy {
                     self.last_dump = Instant::now();
                 }
+
                 Ok(())
             }
             Err(err_str) => Err(Error::new(ErrorCode::Serialization(err_str))),
@@ -550,14 +569,8 @@ impl PickleDb {
     ///
     pub fn get_all(&self) -> Vec<String> {
         [
-            self.map
-                .iter()
-                .map(|(key, _)| key.clone())
-                .collect::<Vec<String>>(),
-            self.list_map
-                .iter()
-                .map(|(key, _)| key.clone())
-                .collect::<Vec<String>>(),
+            self.map.keys().cloned().collect::<Vec<String>>(),
+            self.list_map.keys().cloned().collect::<Vec<String>>(),
         ]
         .concat()
     }
